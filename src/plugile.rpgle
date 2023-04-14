@@ -892,9 +892,9 @@
       /free
        myFile = %trim(pTmpFile)+x'00';
        fd = openIFS(myFile
-              :O_WRONLY + O_CREAT + O_TRUNC + O_TEXTDATA + O_CCSID 
+              :O_WRONLY + O_CREAT + O_TRUNC + O_TEXTDATA + O_CCSID
               :S_IRUSR + S_IWUSR
-              :0);  //Use O_CCSID(32) & job ccsid(0)  
+              :0);  //Use O_CCSID(32) & job ccsid(0)
        if fd > -1;
          rc = writeIFS(fd:pData:pSize);
          rc1 = closeIFS(fd);
@@ -964,7 +964,7 @@
        // -------------
        // write rexx program (once)
        if sRexxRdy = *OFF;
-         // create src files. Use Job CCSID 
+         // create src files. Use Job CCSID
          cmdstr = 'CRTSRCPF FILE(QTEMP/XMLREXX)'
                 +  '  RCDLEN(92) CCSID(*JOB) MBR(HOW)';
          cmdlen = %len(%trim(cmdstr));
@@ -2478,6 +2478,8 @@
            tmpAttr = XML_ATTR_VAL_B;
          when memchar = 'a' or memchar = 'A';       // char
            tmpAttr = XML_ATTR_VAL_A;
+         when memchar = 'c' or memchar = 'C';       // char (null terminated)
+           tmpAttr = XML_ATTR_VAL_C;
          when memchar = 'i' or memchar = 'I';       // signed
            tmpAttr = XML_ATTR_VAL_I;
          when memchar = 'u' or memchar = 'U';       // unsigned
@@ -2806,7 +2808,8 @@
            node.xmlStrP = %addr(sBDefault);
            node.xmlStrSz = 2;
          // character
-         when node.xmlAttr = XML_ATTR_VAL_A;
+         when node.xmlAttr = XML_ATTR_VAL_A
+              or node.xmlAttr = XML_ATTR_VAL_C;
            node.xmlStrP = %addr(sADefault);
            node.xmlStrSz = 1;
          // signed int
@@ -2861,6 +2864,11 @@
          elseif node.xmlVary = XML_VARY_4;
            node.pgmValSz += 4;
          endif;
+         node.pgmRetSz = node.pgmValSz;
+
+       // character (null terminated string style)
+       when node.xmlAttr = XML_ATTR_VAL_C;
+         node.pgmValSz = node.xmlDigits;
          node.pgmRetSz = node.pgmValSz;
 
        // signed int
@@ -3303,7 +3311,8 @@
        // - padded with x'40', stringLen < node.xmlDigits
        // - truncated,         stringLen > node.xmlDigits
        when node.xmlAttr = XML_ATTR_VAL_B
-       or   node.xmlAttr = XML_ATTR_VAL_A;
+       or   node.xmlAttr = XML_ATTR_VAL_A
+       or   node.xmlAttr = XML_ATTR_VAL_C;
          // pad *BLANKS or Zero
          if node.xmlAttr = XML_ATTR_VAL_A;
            convPad = x'40'; // *BLANKS
@@ -3609,7 +3618,8 @@
        // simple character (string char)
        // string = 'charlie'   is type='nA', node.xmlDigits = n
        when node.xmlAttr = XML_ATTR_VAL_B
-       or   node.xmlAttr = XML_ATTR_VAL_A;
+       or   node.xmlAttr = XML_ATTR_VAL_A
+       or   node.xmlAttr = XML_ATTR_VAL_C;
          // pad *BLANKS or Zero
          if node.xmlAttr = XML_ATTR_VAL_A;
            convPad = x'40'; // *BLANKS
@@ -3641,7 +3651,9 @@
          // trim='on|off' (1.7.1)
          if node.xmlTrim = XML_ATTR_TRIM_TRUE
          or (node.xmlTrim = XML_ATTR_TRIM_DEFAULT
-             and node.xmlAttr = XML_ATTR_VAL_A);
+             and node.xmlAttr = XML_ATTR_VAL_A)
+         or (node.xmlTrim = XML_ATTR_TRIM_DEFAULT
+             and node.xmlAttr = XML_ATTR_VAL_C);
            rc9 = trimChar(outPtrP:-1
                    :pCopy:node.xmlDigits
                    :trimSz
@@ -4325,6 +4337,10 @@
      D pargv           S               *   inz(*NULL)
      D argc            S             10I 0 inz(0)
      d argv            s               *   dim(256) based(pargv)
+
+     d pArgvCurrEnd    s               *
+     d pArgvEnd        s               *
+
       /free
        Monitor;
 
@@ -4339,11 +4355,23 @@
 
        // _CALLPGMV(&object_pointer, (void **)&argv[2], argc-2);
        pargv = sArgvBegP;
-       for argc = 0 to 256;
-          if argv(argc+1) = *NULL;
+
+       // calculate argv memory space end address
+       pArgvEnd = pargv + sArgvSz - 1;
+
+       // find the last parameter given - allows *OMIT parameters in the middle
+       argc = %elem(argv);
+       dow argc > 0;
+         // make sure we only look at pointers within the
+         // memory space allocated and in use for them
+         pArgvCurrEnd = %addr(argv(argc)) + %size(argv(argc)) - 1;
+         if pArgvCurrEnd <= pArgvEnd and argv(argc) <> *NULL;
            leave;
          endif;
-       endfor;
+
+         argc -= 1;
+       enddo;
+
        if piReturn <> *NULL;
          pCopy = piReturn;
          myCopy.intx = -1;
@@ -4388,8 +4416,8 @@
      D pCopy           s               *
      D myCopy          ds                  likeds(over_t) based(pCopy)
      D myBuf           S          65000A   inz(*BLANKS)
-     D myPtr           S               *   inz(*NULL)
-     D myCopy2         ds                  likeds(over_t) based(pCopy)
+     D pCopy2          S               *   inz(*NULL)
+     D myCopy2         ds                  likeds(over_t) based(pCopy2)
       * debug
      D tBenArgSz       s             10i 0 inz(0)
      D tBenArgP        S               *   inz(*NULL)
@@ -4401,12 +4429,51 @@
      D pargv           S               *   inz(*NULL)
      D argc            S             10I 0 inz(0)
      d argv            s               *   dim(256) based(pargv)
+
+     d pArgvCurrEnd    s               *
+     d pArgvEnd        s               *
+
      d div16           s             10i 0 inz(16)
      D AnyDS           ds                  qualified based(Template)
      D   AnyProc                       *   Procptr
      D anyProc         s               *   inz(*NULL)
      D myDS            ds                  likeds(AnyDS) based(anyProc)
      D procPtr         S               *   ProcPtr
+
+     D proc32_int32    Pr            10i 0 ExtProc(procPtr)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+     D  argPtr                         *   value options(*nopass)
+
      D pMyProc0        Pr         65000A   ExtProc(procPtr)
      D pMyProc1        Pr         65000A   ExtProc(procPtr)
      D  pargv1                         *   value
@@ -4981,12 +5048,28 @@
          return *OFF;
        endif;
 
+       // set the argv pointer
        pargv = sArgvBegP;
-       for argc = 0 to 256;
-          if argv(argc+1) = *NULL;
+
+       // calculate argv memory space end address
+       pArgvEnd = pargv + sArgvSz - 1;
+
+       // find the last parameter given - allows *OMIT parameters in the middle
+       argc = %elem(argv);
+       dow argc > 0;
+         // make sure we only look at pointers within the
+         // memory space allocated and in use for them
+         pArgvCurrEnd = %addr(argv(argc)) + %size(argv(argc)) - 1;
+         if pArgvCurrEnd <= pArgvEnd and argv(argc) <> *NULL;
            leave;
          endif;
-       endfor;
+
+         argc -= 1;
+       enddo;
+
+       // set return value pointer addresses
+       pCopy2 = %addr(myBuf);
+
        if piReturn <> *NULL;
          pCopy = piReturn;
          myCopy.intx = -1;
@@ -4997,7 +5080,206 @@
        procPtr = myDS.AnyProc;
 
        select;
-       when argc = 0;
+       when (argc = 0 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32();
+       when (argc = 1 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1));
+       when (argc = 2 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2));
+       when (argc = 3 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3));
+       when (argc = 4 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4));
+       when (argc = 5 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5) );
+       when (argc = 6 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6) );
+       when (argc = 7 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7) );
+       when (argc = 8 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8) );
+       when (argc = 9 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8):
+                                     argv(9) );
+       when (argc = 10 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8):
+                                     argv(9): argv(10) );
+       when (argc = 11 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8):
+                                     argv(9): argv(10): argv(11) );
+       when (argc = 12 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8):
+                                     argv(9): argv(10): argv(11): argv(12) );
+       when (argc = 13 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8):
+                                     argv(9): argv(10): argv(11): argv(12):
+                                     argv(13)
+                                    );
+       when (argc = 14 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8):
+                                     argv(9): argv(10): argv(11): argv(12):
+                                     argv(13): argv(14)
+                                    );
+       when (argc = 15 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8):
+                                     argv(9): argv(10): argv(11): argv(12):
+                                     argv(13): argv(14): argv(15)
+                                    );
+       when (argc = 16 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8):
+                                     argv(9): argv(10): argv(11): argv(12):
+                                     argv(13): argv(14): argv(15): argv(16)
+                                    );
+       when (argc = 17 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8):
+                                     argv(9): argv(10): argv(11): argv(12):
+                                     argv(13): argv(14): argv(15): argv(16):
+                                     argv(17)
+                                    );
+       when (argc = 18 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8):
+                                     argv(9): argv(10): argv(11): argv(12):
+                                     argv(13): argv(14): argv(15): argv(16):
+                                     argv(17): argv(18)
+                                    );
+       when (argc = 19 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8):
+                                     argv(9): argv(10): argv(11): argv(12):
+                                     argv(13): argv(14): argv(15): argv(16):
+                                     argv(17): argv(18): argv(19)
+                                    );
+       when (argc = 20 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8):
+                                     argv(9): argv(10): argv(11): argv(12):
+                                     argv(13): argv(14): argv(15): argv(16):
+                                     argv(17): argv(18): argv(19): argv(20)
+                                    );
+       when (argc = 21 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8):
+                                     argv(9): argv(10): argv(11): argv(12):
+                                     argv(13): argv(14): argv(15): argv(16):
+                                     argv(17): argv(18): argv(19): argv(20):
+                                     argv(21)
+                                    );
+       when (argc = 22 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8):
+                                     argv(9): argv(10): argv(11): argv(12):
+                                     argv(13): argv(14): argv(15): argv(16):
+                                     argv(17): argv(18): argv(19): argv(20):
+                                     argv(21): argv(22)
+                                    );
+       when (argc = 23 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8):
+                                     argv(9): argv(10): argv(11): argv(12):
+                                     argv(13): argv(14): argv(15): argv(16):
+                                     argv(17): argv(18): argv(19): argv(20):
+                                     argv(21): argv(22): argv(23)
+                                    );
+       when (argc = 24 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8):
+                                     argv(9): argv(10): argv(11): argv(12):
+                                     argv(13): argv(14): argv(15): argv(16):
+                                     argv(17): argv(18): argv(19): argv(20):
+                                     argv(21): argv(22): argv(23): argv(24)
+                                    );
+       when (argc = 25 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8):
+                                     argv(9): argv(10): argv(11): argv(12):
+                                     argv(13): argv(14): argv(15): argv(16):
+                                     argv(17): argv(18): argv(19): argv(20):
+                                     argv(21): argv(22): argv(23): argv(24):
+                                     argv(25)
+                                    );
+       when (argc = 26 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8):
+                                     argv(9): argv(10): argv(11): argv(12):
+                                     argv(13): argv(14): argv(15): argv(16):
+                                     argv(17): argv(18): argv(19): argv(20):
+                                     argv(21): argv(22): argv(23): argv(24):
+                                     argv(25): argv(26)
+                                    );
+       when (argc = 27 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8):
+                                     argv(9): argv(10): argv(11): argv(12):
+                                     argv(13): argv(14): argv(15): argv(16):
+                                     argv(17): argv(18): argv(19): argv(20):
+                                     argv(21): argv(22): argv(23): argv(24):
+                                     argv(25): argv(26): argv(27)
+                                    );
+       when (argc = 28 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8):
+                                     argv(9): argv(10): argv(11): argv(12):
+                                     argv(13): argv(14): argv(15): argv(16):
+                                     argv(17): argv(18): argv(19): argv(20):
+                                     argv(21): argv(22): argv(23): argv(24):
+                                     argv(25): argv(26): argv(27): argv(28)
+                                    );
+       when (argc = 29 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8):
+                                     argv(9): argv(10): argv(11): argv(12):
+                                     argv(13): argv(14): argv(15): argv(16):
+                                     argv(17): argv(18): argv(19): argv(20):
+                                     argv(21): argv(22): argv(23): argv(24):
+                                     argv(25): argv(26): argv(27): argv(28):
+                                     argv(29)
+                                    );
+       when (argc = 30 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8):
+                                     argv(9): argv(10): argv(11): argv(12):
+                                     argv(13): argv(14): argv(15): argv(16):
+                                     argv(17): argv(18): argv(19): argv(20):
+                                     argv(21): argv(22): argv(23): argv(24):
+                                     argv(25): argv(26): argv(27): argv(28):
+                                     argv(29): argv(30)
+                                    );
+       when (argc = 31 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8):
+                                     argv(9): argv(10): argv(11): argv(12):
+                                     argv(13): argv(14): argv(15): argv(16):
+                                     argv(17): argv(18): argv(19): argv(20):
+                                     argv(21): argv(22): argv(23): argv(24):
+                                     argv(25): argv(26): argv(27): argv(28):
+                                     argv(29): argv(30): argv(31)
+                                    );
+       when (argc = 32 and retSize = RESULT_INT32);
+         myCopy2.intx = proc32_int32(argv(1): argv(2): argv(3): argv(4):
+                                     argv(5): argv(6): argv(7): argv(8):
+                                     argv(9): argv(10): argv(11): argv(12):
+                                     argv(13): argv(14): argv(15): argv(16):
+                                     argv(17): argv(18): argv(19): argv(20):
+                                     argv(21): argv(22): argv(23): argv(24):
+                                     argv(25): argv(26): argv(27): argv(28):
+                                     argv(29): argv(30): argv(31): argv(32)
+                                    );
+
+       when (argc = 0);
          myBuf = pMyProc0();
        when argc = 1;
          myBuf = pMyProc1(argv(1));
@@ -5185,8 +5467,6 @@
        // from PASE ILE BASE to the return area
        // xml is expecting as output
        if piReturn <> *NULL;
-         myPtr = %addr(myBuf);
-         pCopy = piReturn;
          select;
          when retSize = RESULT_INT8;
            myCopy.chrx =  myCopy2.chrx;
@@ -5208,7 +5488,7 @@
            myCopy.doublex = myCopy2.doublex;
          other;
            if retSize > 0;
-             cpybytes(piReturn:myPtr:retSize);
+             cpybytes(piReturn:pCopy2:retSize);
            endif;
          endsl;
        endif;
